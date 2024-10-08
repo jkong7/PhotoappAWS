@@ -4,7 +4,7 @@
 # viewing.
 #
 # Authors:
-#   YOUR NAME
+#   Jonathan Kong 
 #   Prof. Joe Hummel (initial template)
 #   Northwestern University
 #
@@ -63,7 +63,6 @@ def prompt():
     print("ERROR")
     return -1
 
-
 ###################################################################
 #
 # stats
@@ -98,23 +97,175 @@ def stats(bucketname, bucket, endpoint, dbConn):
     #
     print("RDS MySQL endpoint:", endpoint)
 
-    sql = """
-    select now();
+    sql_users_info = """
+    SELECT COUNT(*) 
+    FROM users; 
     """
 
-    row = datatier.retrieve_one_row(dbConn, sql)
-    if row is None:
-      print("Database operation failed...")
-    elif row == ():
-      print("Unexpected query failure...")
-    else:
-      print(row[0])
+    row_users = datatier.retrieve_one_row(dbConn, sql_users_info)
+    if row_users is None: 
+      print("Failed to retrieve any user rows")
+    else: 
+      print("# of users: ", row_users[0]) 
+    
+    sql_assets_info = """
+    SELECT COUNT(*) 
+    FROM assets; 
+    """
+
+    row_assets = datatier.retrieve_one_row(dbConn, sql_assets_info)
+    if row_assets is None: 
+      print("Failed to retrieve any user rows")
+    else: 
+      print("# of assets: ", row_assets[0]) 
 
   except Exception as e:
     print("ERROR")
     print("ERROR: an exception was raised and caught")
     print("ERROR")
     print("MESSAGE:", str(e))
+
+
+###################################################################
+#
+# users
+#
+def users(dbConn): 
+  """
+  Retrieves and outputs user information from the user table: userid, 
+  email, name, and folder 
+
+  Parameters
+  ----------
+  dbConn: open connection to MySQL server
+  
+  Returns
+  -------
+  nothing
+  """
+
+  try: 
+    sql_users_output = """
+    SELECT * 
+    FROM users 
+    ORDER BY userid DESC; 
+    """
+    rows = datatier.retrieve_all_rows(dbConn, sql_users_output)
+    if rows is None: 
+      print("Failed to retrieve any user rows")
+    else: 
+      for row in rows: 
+        print("User id:", row[0], "\n  Email:", row[1], "\n  Name:", row[2]+" , "+row[3], "\n  Folder:", row[4])
+  except Exception as e: 
+    print("ERROR")
+    print("ERROR: an exception was raised and caught")
+    print("ERROR")
+    print("MESSAGE:", str(e))
+
+###################################################################
+#
+# assets
+#
+def assets(dbConn): 
+  """
+  Retrieves and outputs asset information from the asset table: assetid, 
+  userid, original name, and key name 
+
+  Parameters
+  ----------
+  dbConn: open connection to MySQL server
+  
+  Returns
+  -------
+  nothing
+  """
+
+  try: 
+    sql_asset_output = """
+    SELECT * 
+    FROM assets 
+    ORDER BY assetid DESC; 
+    """
+
+    rows = datatier.retrieve_all_rows(dbConn, sql_asset_output)
+    if rows is None: 
+      print("Failed to retrieve any asset rows")
+    else: 
+      for row in rows: 
+        print("Asset id:", row[0], "\n  User id:", row[1], "\n  Original name:", row[2], "\n  Key name:", row[3])
+  except Exception as e: 
+    print("ERROR")
+    print("ERROR: an exception was raised and caught")
+    print("ERROR")
+    print("MESSAGE:", str(e))
+    
+###################################################################
+#
+# download
+#
+def download(dbConn): 
+    """
+    Retrieves asset file by assetid in the asset table, downloads file, 
+    and then renames it based on original name.
+  
+    Parameters
+    ----------
+    dbConn: open connection to MySQL server
+  
+    Returns
+    -------
+    nothing
+    """
+    try: 
+        print("Enter asset id>")
+        cmd = input()
+
+        # Query the database for assetname and bucketkey based on assetid
+        sql_download_input_name = """
+        SELECT assetname, bucketkey 
+        FROM assets 
+        WHERE assetid = %s; 
+        """
+
+        # User input as part of the query dynamically 
+        cursor = dbConn.cursor()
+        cursor.execute(sql_download_input_name, (cmd,))
+        row = cursor.fetchone() 
+        cursor.close() 
+
+        if row is None: 
+            print("No such asset...") 
+            return
+
+        # Retrieve the assetname (original name) and bucketkey (S3 key)
+        assetname = row[0]   
+        bucketkey = row[1]   
+
+        s3 = boto3.client('s3')
+        bucket_name = 'photoapp-jonnykong-310' 
+
+        # Error handling for checking if the object exists in S3
+        try:
+            s3.head_object(Bucket=bucket_name, Key=bucketkey)
+            print(f"{assetname} exists, downloading...")
+
+            # Download the file from S3 and save it locally as the original asset name
+            s3.download_file(bucket_name, bucketkey, assetname)
+            print(f"Downloaded from S3 and saved as '{assetname}'")
+            
+        except s3.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                print("404 Error: File not found in S3.")
+            else: 
+                print(f"Error: {e}")
+
+    except Exception as e:
+        print("ERROR")
+        print("ERROR: an exception was raised and caught")
+        print("MESSAGE:", str(e))
+
+
+
 
 
 #########################################################################
@@ -188,6 +339,12 @@ while cmd != 0:
   #
   if cmd == 1:
     stats(bucketname, bucket, endpoint, dbConn)
+  elif cmd == 2: 
+    users(dbConn)
+  elif cmd == 3: 
+    assets(dbConn)
+  elif cmd == 4: 
+    download(dbConn)
   #
   #
   # TODO
