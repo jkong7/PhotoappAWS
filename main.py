@@ -97,6 +97,7 @@ def stats(bucketname, bucket, endpoint, dbConn):
     #
     print("RDS MySQL endpoint:", endpoint)
 
+    #Retrive number of users in users table
     sql_users_info = """
     SELECT COUNT(*) 
     FROM users; 
@@ -108,6 +109,8 @@ def stats(bucketname, bucket, endpoint, dbConn):
     else: 
       print("# of users: ", row_users[0]) 
     
+
+    #Retrive number of assets in assets table
     sql_assets_info = """
     SELECT COUNT(*) 
     FROM assets; 
@@ -145,17 +148,22 @@ def users(dbConn):
   """
 
   try: 
+
+    #Retrive all columns and in descending order by userid 
     sql_users_output = """
     SELECT * 
     FROM users 
     ORDER BY userid DESC; 
     """
+
+    #We want all the rows 
     rows = datatier.retrieve_all_rows(dbConn, sql_users_output)
     if rows is None: 
       print("Failed to retrieve any user rows")
     else: 
       for row in rows: 
         print("User id:", row[0], "\n  Email:", row[1], "\n  Name:", row[2]+" , "+row[3], "\n  Folder:", row[4])
+
   except Exception as e: 
     print("ERROR")
     print("ERROR: an exception was raised and caught")
@@ -181,12 +189,14 @@ def assets(dbConn):
   """
 
   try: 
+    #Retrive all columns and in descending order by assetid
     sql_asset_output = """
     SELECT * 
     FROM assets 
     ORDER BY assetid DESC; 
     """
 
+    #We want all the rows 
     rows = datatier.retrieve_all_rows(dbConn, sql_asset_output)
     if rows is None: 
       print("Failed to retrieve any asset rows")
@@ -203,10 +213,73 @@ def assets(dbConn):
 #
 # download
 #
-def download(dbConn): 
+def download(dbConn, bucket, display=False): 
     """
     Retrieves asset file by assetid in the asset table, downloads file, 
-    and then renames it based on original name.
+    and then renames it based on original name. Shows image if user inputs
+    5 (display boolean will be passed as True)
+  
+    Parameters
+    ----------
+    dbConn: open connection to MySQL server
+    display: boolean-controls whether to show downloaded image
+  
+    Returns
+    -------
+    nothing
+    """
+    try: 
+        print("Enter asset id>")
+        cmd = input()
+
+        #Query the database for assetname and bucketkey based on assetid
+        sql_download_input_name = """
+        SELECT assetname, bucketkey 
+        FROM assets 
+        WHERE assetid = %s; 
+        """
+
+        row = datatier.retrieve_one_row(dbConn, sql_download_input_name, [cmd]) 
+
+        if row is None or row==(): 
+            print("No such asset...")
+            return
+
+        #Retrieve the assetname (original name) and bucketkey (S3 key)
+        assetname = row[0]   
+        bucketkey = row[1]
+
+        # Use the helper function to download the file
+        downloaded_filename = awsutil.download_file(bucket, bucketkey)
+
+        if downloaded_filename is None:
+            print(f"Error: Failed to download file from S3 with key {bucketkey}")
+        else:
+            #Rename the downloaded file to the original asset name
+            os.rename(downloaded_filename, assetname)
+            print(f"Downloaded from S3 and saved as ' {assetname} '")
+
+            # If display=True, trigger image to pop up
+            if display: 
+                image = img.imread(assetname)
+                plt.imshow(image)
+                plt.show()
+
+    except Exception as e:
+        print("ERROR")
+        print("ERROR: an exception was raised and caught")
+        print("MESSAGE:", str(e))
+
+
+###################################################################
+#
+# upload
+#
+def upload(dbConn, bucket): 
+    """
+    Inputs a local file, a user id, and uploads this file to the user's folder
+    in S3 (file is given a unique uuid name). Also inputs all asset information into the 
+    asset table as a row 
   
     Parameters
     ----------
@@ -217,47 +290,62 @@ def download(dbConn):
     nothing
     """
     try: 
-        print("Enter asset id>")
-        cmd = input()
+        # Local filename + error handling 
+        print("Enter local filename>")
+        cmd_filename = input()
 
-        # Query the database for assetname and bucketkey based on assetid
-        sql_download_input_name = """
-        SELECT assetname, bucketkey 
-        FROM assets 
-        WHERE assetid = %s; 
+        if not os.path.isfile(cmd_filename): 
+            print(f"Local file '{cmd_filename}' does not exist...")
+            return  
+
+        print("Enter user id>")
+        cmd_userid = input()
+
+        # Check if this query does not come up empty, which indicates the user exists
+        sql_check_user = """
+        SELECT bucketfolder FROM users
+        WHERE userid = %s;
         """
 
-        # User input as part of the query dynamically 
-        cursor = dbConn.cursor()
-        cursor.execute(sql_download_input_name, (cmd,))
-        row = cursor.fetchone() 
-        cursor.close() 
+        row = datatier.retrieve_one_row(dbConn, sql_check_user, [cmd_userid])
 
         if row is None: 
-            print("No such asset...") 
+            print("No such user...")
+            return 
+
+        #Construct uuid-based bucket key name
+        folder_id = row[0]
+        file_id = str(uuid.uuid4())
+        bucket_key = f"{folder_id}/{file_id}.jpg"
+
+        uploaded_key = awsutil.upload_file(cmd_filename, bucket, bucket_key)
+
+        if uploaded_key is None:
+            print(f"Error uploading file to S3 as '{bucket_key}'")
+            return 
+        else:
+            print(f"Uploaded and stored in S3 as '{uploaded_key}'")
+
+        #Insert row containing new asset info into the assets table
+        sql_insert_asset = """
+        INSERT INTO assets (userid, assetname, bucketkey)
+        VALUES (%s, %s, %s)
+        """
+
+        rows = datatier.perform_action(dbConn, sql_insert_asset, [cmd_userid, cmd_filename, uploaded_key])
+
+        if rows == -1: 
+            print("Error inserting asset into assets table")
             return
+        
+        #Output the auto-generated asset id from the inputted row
+        sql_last_insert = """
+        SELECT LAST_INSERT_ID()
+        """
 
-        # Retrieve the assetname (original name) and bucketkey (S3 key)
-        assetname = row[0]   
-        bucketkey = row[1]   
-
-        s3 = boto3.client('s3')
-        bucket_name = 'photoapp-jonnykong-310' 
-
-        # Error handling for checking if the object exists in S3
-        try:
-            s3.head_object(Bucket=bucket_name, Key=bucketkey)
-            print(f"{assetname} exists, downloading...")
-
-            # Download the file from S3 and save it locally as the original asset name
-            s3.download_file(bucket_name, bucketkey, assetname)
-            print(f"Downloaded from S3 and saved as '{assetname}'")
-            
-        except s3.exceptions.ClientError as e:
-            if e.response['Error']['Code'] == '404':
-                print("404 Error: File not found in S3.")
-            else: 
-                print(f"Error: {e}")
+        row = datatier.retrieve_one_row(dbConn, sql_last_insert)
+        last_asset_id = row[0]
+        print(f"Recorded in RDS under asset id {last_asset_id}")
 
     except Exception as e:
         print("ERROR")
@@ -265,7 +353,63 @@ def download(dbConn):
         print("MESSAGE:", str(e))
 
 
+###################################################################
+#
+# add_user 
+#
+def add_user(dbConn): 
+    """
+    Retrieves asset file by assetid in the asset table, downloads file, 
+    and then renames it based on original name. Shows image if user inputted
+    5 (display boolean will be passed as True)
+  
+    Parameters
+    ----------
+    dbConn: open connection to MySQL server
+  
+    Returns
+    -------
+    nothing
+    """
+    try: 
+      #Retrive email, lastname, and firstname from input 
+      print("Enter user's email>")
+      cmd_user_email = input()
 
+      print("Enter user's last (family) name>")
+      cmd_last_name = input()
+
+      print("Enter user's first (family) name>")
+      cmd_first_name = input()
+
+      #Create uuid folder_name
+      folder_name=str(uuid.uuid4())
+
+      #Action query-insert new user into users table
+      sql_insert_user = """
+      INSERT INTO users (email, lastname, firstname, bucketfolder)
+      VALUES (%s, %s, %s, %s)
+      """
+
+      rows = datatier.perform_action(dbConn, sql_insert_user, [cmd_user_email, cmd_last_name, cmd_first_name, folder_name])
+
+      if rows == -1: 
+        print("Error inserting user into users table")
+      
+      #Lastly, output the auto-generated user id from the inputted row
+      sql_last_insert = """
+      SELECT LAST_INSERT_ID()
+      """
+
+      row = datatier.retrieve_one_row(dbConn, sql_last_insert)
+      last_user_id = row[0]
+      print(f"Recorded in RDS under {last_user_id}")
+  
+
+    except Exception as e:
+        print("ERROR")
+        print("ERROR: an exception was raised and caught")
+        print("MESSAGE:", str(e))
 
 
 #########################################################################
@@ -336,7 +480,6 @@ if dbConn is None:
 cmd = prompt()
 
 while cmd != 0:
-  #
   if cmd == 1:
     stats(bucketname, bucket, endpoint, dbConn)
   elif cmd == 2: 
@@ -344,7 +487,13 @@ while cmd != 0:
   elif cmd == 3: 
     assets(dbConn)
   elif cmd == 4: 
-    download(dbConn)
+    download(dbConn, bucket)
+  elif cmd == 5: 
+    download(dbConn, bucket, True)
+  elif cmd == 6: 
+     upload(dbConn, bucket) 
+  elif cmd == 7: 
+    add_user(dbConn)
   #
   #
   # TODO
